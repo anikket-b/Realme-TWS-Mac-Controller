@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/aniketbudhwani/tws application/.build/out/Products/Release/BudsBar'
+relocations:     []
+...

@@ -1,0 +1,11 @@
+{
+  "/Users/aniketbudhwani/tws application/Sources/BudsBar/App.swift" : {
+    "abi-baseline-json" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar.abi.json",
+    "const-values" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar-primary.swiftconstvalues",
+    "dependencies" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar-primary.d",
+    "diagnostics" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar-primary.dia",
+    "swiftdoc" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar.swiftdoc",
+    "swiftmodule" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar.swiftmodule",
+    "swiftsourceinfo" : "/Users/aniketbudhwani/tws application/.build/out/Intermediates.noindex/BudsBar.build/Release/BudsBar-p.build/Objects-normal/arm64/BudsBar.swiftsourceinfo"
+  }
+}

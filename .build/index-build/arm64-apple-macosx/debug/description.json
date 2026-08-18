@@ -1,0 +1,258 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.BudsBar-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "fileList" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/sources",
+      "importPath" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/App.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/Buds.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/PanelView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/Protocol.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "BudsBar",
+      "moduleOutputPath" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/Modules/BudsBar.swiftmodule",
+      "objects" : [
+        "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/App.swift.o",
+        "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/Buds.swift.o",
+        "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/PanelView.swift.o",
+        "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/Protocol.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "BudsBar_main",
+        "-swift-version",
+        "5",
+        "-load-plugin-library",
+        "/Applications/Xcode-beta.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib",
+        "-Xfrontend",
+        "-experimental-lazy-typecheck",
+        "-Xfrontend",
+        "-experimental-skip-all-function-bodies",
+        "-Xfrontend",
+        "-experimental-allow-module-with-compiler-errors",
+        "-Xfrontend",
+        "-empty-abi-descriptor",
+        "-I",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-L",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-plugin-path",
+        "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "tws_application"
+      ],
+      "outputFileMapPath" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/Modules/BudsBar.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : true,
+      "sources" : [
+        "/Users/aniketbudhwani/tws application/Sources/BudsBar/App.swift",
+        "/Users/aniketbudhwani/tws application/Sources/BudsBar/Buds.swift",
+        "/Users/aniketbudhwani/tws application/Sources/BudsBar/PanelView.swift",
+        "/Users/aniketbudhwani/tws application/Sources/BudsBar/Protocol.swift"
+      ],
+      "tempsPath" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "BudsBar" : [
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "-module-name",
+      "BudsBar",
+      "-package-name",
+      "tws_application",
+      "-c",
+      "/Users/aniketbudhwani/tws application/Sources/BudsBar/App.swift",
+      "/Users/aniketbudhwani/tws application/Sources/BudsBar/Buds.swift",
+      "/Users/aniketbudhwani/tws application/Sources/BudsBar/PanelView.swift",
+      "/Users/aniketbudhwani/tws application/Sources/BudsBar/Protocol.swift",
+      "-I",
+      "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-Onone",
+      "-enable-testing",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "BudsBar_main",
+      "-swift-version",
+      "5",
+      "-load-plugin-library",
+      "/Applications/Xcode-beta.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib",
+      "-Xfrontend",
+      "-experimental-lazy-typecheck",
+      "-Xfrontend",
+      "-experimental-skip-all-function-bodies",
+      "-Xfrontend",
+      "-experimental-allow-module-with-compiler-errors",
+      "-Xfrontend",
+      "-empty-abi-descriptor",
+      "-I",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-L",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-plugin-path",
+      "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "tws_application",
+      "-driver-use-frontend-path",
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "BudsBar" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : [
+      {
+
+      }
+    ]
+  },
+  "writeCommands" : {
+    "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/App.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/Buds.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/PanelView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/aniketbudhwani/tws application/Sources/BudsBar/Protocol.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/BudsBar.build/sources"
+    },
+    "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/aniketbudhwani/tws application/.build/index-build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+    }
+  }
+}

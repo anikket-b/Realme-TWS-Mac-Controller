@@ -1,0 +1,167 @@
+# BudsBar
+
+A macOS menu bar app for the **realme Buds T500 Pro**. Shows per-earbud and case battery,
+switches between ANC / Off / Transparency, and connects or disconnects the
+buds — none of which macOS exposes on its own.
+
+There is no macOS realme Link. To a Mac these are a plain A2DP/HFP headset: noise control
+can only be changed by touching an earbud, and the system reports a single battery figure
+instead of three. BudsBar talks to the earbuds' vendor control protocol directly.
+
+State is read back from the earbuds rather than assumed, so the panel and realme Link on a
+phone agree with each other. Change the mode on the phone and BudsBar follows within about
+a second; change it in BudsBar and the phone follows.
+
+## Requirements
+
+- macOS 26 or later (uses the Liquid Glass APIs)
+- Swift 6.2+ toolchain — Command Line Tools are enough to compile
+- An installed `Xcode.app`, for one file only: the SwiftUI macro plugin. It does **not**
+  need to be selected with `xcode-select`. See [Building](#building).
+- realme Buds T500 Pro, already paired with the Mac
+
+## Building
+
+```sh
+./build.sh            # release; pass `debug` for a debug build
+open BudsBar.app
+```
+
+To see the protocol trace on stderr, run the binary directly instead:
+
+```sh
+./BudsBar.app/Contents/MacOS/BudsBar
+```
+
+`build.sh` compiles with SwiftPM, assembles the `.app` bundle, and ad-hoc signs it. The
+bundle identifier is fixed across rebuilds so the granted Bluetooth permission survives,
+though re-signing may prompt once more.
+
+### Why Xcode is needed to build
+
+SwiftUI's `@State` and `@Bindable` are macros, and the Command Line Tools ship the SwiftUI
+framework *without* its macro plugin — so every property wrapper fails to compile. The
+manifest locates `libSwiftUIMacros.dylib` inside any `/Applications/Xcode*.app` and passes
+it to the compiler. The plugin loads into the CLT compiler even when that Xcode's own
+toolchain is too old to run on the current OS. Declaring it in `Package.swift` rather than
+only in `build.sh` keeps SourceKit — and therefore editor diagnostics — working too.
+
+## Layout
+
+```
+Package.swift          SwiftPM manifest; also locates the SwiftUI macro plugin
+build.sh               build → .app bundle → ad-hoc codesign
+Resources/Info.plist   LSUIElement, NSBluetoothAlwaysUsageDescription
+Sources/BudsBar/
+  App.swift            MenuBarExtra entry point
+  Buds.swift           IOBluetooth transport and observable device state
+  Protocol.swift       OPOv1 frame encoding/decoding (pure, self-checking)
+  PanelView.swift      the panel UI
+Tools/sniff.swift      read-only RFCOMM logger, for decoding further settings
+```
+
+`Info.plist` needs `NSBluetoothAlwaysUsageDescription`; without it the Bluetooth
+permission prompt never appears and RFCOMM fails silently. `LSUIElement` keeps the app out
+of the Dock.
+
+## The protocol
+
+The buds expose several RFCOMM services over Bluetooth Classic. The one that matters is
+`oppointeraction`, SDP UUID `0000079A-D102-11E1-9B23-00025B00A5A5` — **OPOv1**, the control
+protocol shared across BBK Electronics brands (OPPO, OnePlus, realme). BudsBar resolves the
+channel by UUID at runtime rather than hardcoding a number, so a firmware renumber can't
+silently point it at a different service.
+
+### Frame format
+
+```
+aa  <len>  00 00  <cat>  <sub>  <seq>  <payload len: u16le>  <payload…>
+```
+
+`len` counts every byte after itself, so a frame is `len + 2` bytes. There is **no
+checksum** — the length fields account for the payload exactly. A reply echoes the request's
+`seq` and sets the high bit on `sub` (`0x04` → `0x84`). Payload byte 0 of a reply is a
+status: `00` accepted, `01` rejected.
+
+### Commands used
+
+| Purpose | Frame |
+|---|---|
+| Hello | `aa 07 00 00 00 01 <seq> 00 00` |
+| Off | `aa 0a 00 00 04 04 <seq> 03 00 01 01 01` |
+| Transparency | `aa 0a 00 00 04 04 <seq> 03 00 01 01 02` |
+| ANC | `aa 0a 00 00 04 04 <seq> 03 00 01 01 04` |
+
+**The ANC and Off values are the reverse of the published OnePlus mapping.** On the T500
+Pro `0x01` is Off and `0x04` is ANC. Taking the documented mapping at face value produced
+an app where those two buttons did each other's job. Corroborating evidence: while cycling
+modes from the phone, the buds only ever announced `0x01`, `0x02` and `0x08` — never
+`0x04`. `0x08` appears to be a second ANC variant (adaptive) and is treated as ANC.
+
+### Notifications
+
+The buds push status on category `04`, subcommand `02`, unprompted. The payload is a tagged
+list — `<type> <count>` then `count` (id, value) pairs:
+
+| Type | Meaning |
+|---|---|
+| `01` | Battery: id 1 = left, 2 = right, 3 = case, values in percent |
+| `02` | Some other setting. Moves when the mode changes but is **not** the mode. Not decoded. |
+| `03` | Noise mode: id 1, value `01`/`02`/`04`/`08` as above |
+
+Three traps worth knowing, all of which cost real debugging time here:
+
+- The mode lives in the **`03`** block, not `02`. The `02` block also moves when the mode
+  changes, which makes it look like the mode until you command a value and watch which
+  field actually follows.
+- Rejection error codes are **not** a signal about your payload. The same bytes return
+  different codes depending on position in a run of requests, so they cannot be used to
+  hill-climb toward a correct payload shape.
+- Do not trust another device's value mapping. The frame *format* carried over from the
+  OnePlus documentation intact, but the ANC and Off values did not.
+
+## Decoding more settings
+
+`Tools/sniff.swift` opens a channel read-only and hex-dumps everything, for working out
+opcodes that aren't decoded yet (EQ, touch controls):
+
+```sh
+swift Tools/sniff.swift 15        # defaults to 12 15 17
+```
+
+macOS hands out one RFCOMM channel per device, so **quit BudsBar before running it** — they
+cannot both hold a channel. For the same reason the sniffer takes one channel at a time;
+requesting several at once silently returns the same channel repeatedly.
+
+The buds also advertise a `BESOTA` service on channel 13. That is the Bestechnic firmware
+OTA endpoint, and a malformed write there can brick the earbuds. `sniff.swift` refuses that
+channel outright, and nothing in this project opens it.
+
+## Verifying changes
+
+`Protocol.swift` carries a `selfCheck()` that replays real captured frames — battery, each
+mode, a coalesced pair, a frame split across two reads, and leading garbage — and runs
+automatically at launch in debug builds:
+
+```sh
+./build.sh debug && ./BudsBar.app/Contents/MacOS/BudsBar
+# BudsProtocol.selfCheck passed
+```
+
+To exercise the radio end to end, `BUDSBAR_TEST=1` commands all three modes in turn and
+logs what the buds report back:
+
+```sh
+BUDSBAR_TEST=1 ./BudsBar.app/Contents/MacOS/BudsBar
+# TEST commanding ANC, value 4
+# MODE reported ANC, wire 4
+```
+
+## Credits
+
+The OPOv1 command layout came from
+[Cracking OPOv1](https://aasheesh.vercel.app/blog/oneplus-buds) and
+[AasheeshLikePanner/cracked-oneplus-buds](https://github.com/AasheeshLikePanner/cracked-oneplus-buds),
+which document the protocol for OnePlus Buds over BLE. The frame format carries over intact
+to realme hardware on RFCOMM; the notification payload types here were decoded against the
+T500 Pro directly.
