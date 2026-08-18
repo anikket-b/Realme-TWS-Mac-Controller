@@ -21,6 +21,27 @@ State is read back from the earbuds rather than assumed, so the panel and realme
 phone agree with each other. Change the mode on the phone and the app follows within about
 a second; change it in the app and the phone follows.
 
+## Install
+
+[![Download](https://img.shields.io/badge/Download-Realme%20TWS%20Mac%20Controller-blue?style=for-the-badge&logo=apple)](https://github.com/aniket-2308/Realme-TWS-Mac-Controller/releases/latest/download/Realme-TWS-Mac-Controller.zip)
+
+Or paste this into Terminal — it downloads the latest release, installs it into
+`/Applications`, and launches it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aniket-2308/Realme-TWS-Mac-Controller/main/install.sh | sh
+```
+
+The build is ad-hoc signed, not notarised. The script clears the quarantine flag for you;
+if you download the zip by hand instead, macOS will refuse to open it until you run:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Realme TWS Mac Controller.app"
+```
+
+The download needs no toolchain — the [requirements](#requirements) below apply to building
+from source.
+
 ## Requirements
 
 - macOS 26 or later (uses the Liquid Glass APIs)
