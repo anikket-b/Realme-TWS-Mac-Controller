@@ -135,7 +135,19 @@ enum BudsProtocol {
         /// Only reported alongside a `.noiseMode(.noiseCancellation)`, so the last known
         /// level survives a trip through Off or Transparency.
         case ancLevel(ANCLevel?)
-        case battery(left: Int?, right: Int?, enclosure: Int?)
+        /// One slot at a time, and nil means "reported as unknown" — not "absent".
+        ///
+        /// A battery frame can carry a subset of the three slots, so a slot that is missing
+        /// must keep its last value while a slot that is present but unreadable must be
+        /// cleared. Bundling all three into one update collapsed those two cases together,
+        /// and a case that had gone to sleep kept showing its last percentage forever.
+        case battery(BatterySlot, Int?)
+    }
+
+    enum BatterySlot: UInt8 {
+        case left = 0x01
+        case right = 0x02
+        case enclosure = 0x03
     }
 
     // MARK: - Payload types
@@ -145,12 +157,6 @@ enum BudsProtocol {
         /// Ids 0x01–0x03, none of which track the noise mode. Not decoded.
         case otherSettings = 0x02
         case noiseMode = 0x03
-    }
-
-    private enum BatteryID: UInt8 {
-        case left = 0x01
-        case right = 0x02
-        case enclosure = 0x03
     }
 
     /// Entry id carrying the mode inside a `noiseMode` payload.
@@ -165,6 +171,10 @@ enum BudsProtocol {
     /// Builds a frame, filling in both length fields.
     static func makeFrame(_ b2: UInt8, _ b3: UInt8, _ b4: UInt8, _ b5: UInt8,
                           sequence: UInt8, payload: [UInt8]) -> [UInt8] {
+        // `len` is a single byte covering the whole frame, so the payload cannot exceed
+        // what it can count. Every caller here sends three bytes or fewer; without this the
+        // overflow would surface as an arithmetic trap inside the conversion below.
+        precondition(payload.count <= 0xff - 7, "payload too long for a one-byte length")
         var frame: [UInt8] = [sync, 0, b2, b3, b4, b5, sequence,
                               UInt8(payload.count & 0xff), UInt8(payload.count >> 8)]
         frame += payload
@@ -265,20 +275,13 @@ enum BudsProtocol {
 
         switch type {
         case .battery:
-            var left: Int?, right: Int?, enclosure: Int?
-            for (id, value) in pairs {
-                switch BatteryID(rawValue: id) {
-                case .left: left = Int(value)
-                case .right: right = Int(value)
-                case .enclosure:
-                    // The case reports 0 when it is asleep or shut rather than omitting
-                    // itself, and a genuinely flat case is the rarer reading — so treat
-                    // 0 as "unknown" and show a dash instead of a false 0%.
-                    enclosure = value == 0 ? nil : Int(value)
-                case nil: break
-                }
+            return pairs.compactMap { id, value in
+                guard let slot = BatterySlot(rawValue: id) else { return nil }
+                // A slot reports 0 while it is asleep or shut rather than dropping out of
+                // the frame, and a genuinely flat battery is the rarer reading — so 0 means
+                // unknown, and the UI shows a dash rather than a false 0%.
+                return .battery(slot, value == 0 ? nil : Int(value))
             }
-            return [.battery(left: left, right: right, enclosure: enclosure)]
 
         case .noiseMode:
             // While Smart is running the buds emit a second `03` block, with a count of 4
@@ -318,12 +321,22 @@ enum BudsProtocol {
         assert(frames.count == 1, "one battery frame")
         assert(buffer.isEmpty, "buffer fully consumed")
         assert(frames[0].opcode == opcodeStatusReport)
-        assert(interpret(frames[0]) == [.battery(left: 100, right: 100, enclosure: 80)])
+        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.right, 100),
+                                        .battery(.enclosure, 80)])
 
         // Same report with the case asleep — must read as unknown, not 0%.
         buffer = bytes("aa 0f 00 00 04 02 10 08 00 01 03 01 64 02 64 03 00")
         frames = drainFrames(from: &buffer)
-        assert(interpret(frames[0]) == [.battery(left: 100, right: 100, enclosure: nil)])
+        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.right, 100),
+                                        .battery(.enclosure, nil)],
+               "a sleeping case reads as unknown, and says so rather than staying silent")
+
+        // A partial frame: left and case only, no right. The absent slot must produce no
+        // update at all, so whatever the UI already had for it survives.
+        buffer = bytes("aa 0d 00 00 04 02 99 06 00 01 02 01 64 03 00")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.enclosure, nil)],
+               "an absent slot is not the same as an unknown one")
 
         // Noise mode, captured while commanding each mode in turn.
         for (wire, expected) in [("01", NoiseMode.off), ("02", .transparency)] {
@@ -412,7 +425,8 @@ enum BudsProtocol {
         buffer.append(contentsOf: whole[6...])
         frames = drainFrames(from: &buffer)
         assert(frames.count == 1 && buffer.isEmpty, "frame completed across reads")
-        assert(interpret(frames[0]) == [.battery(left: 100, right: 100, enclosure: 80)])
+        assert(interpret(frames[0]) == [.battery(.left, 100), .battery(.right, 100),
+                                        .battery(.enclosure, 80)])
 
         // Leading garbage before the sync byte must be skipped, not fatal.
         buffer = bytes("ff ff") + whole

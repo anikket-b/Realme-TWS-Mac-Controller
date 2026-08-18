@@ -24,7 +24,11 @@ struct PanelView: View {
             .padding(16)
         }
         .frame(width: 340)
+        // The popover re-adds this view to a window each time it opens, so onAppear is a
+        // per-open hook: the panel always shows live state, not whatever it last rendered.
+        .onAppear { buds.refreshConnectionState() }
         .animation(.smooth(duration: 0.28), value: buds.isConnected)
+        .animation(.smooth(duration: 0.28), value: buds.battery.enclosure == nil)
         .animation(.smooth(duration: 0.28), value: buds.mode)
         .animation(.smooth(duration: 0.28), value: buds.ancLevel)
     }
@@ -37,7 +41,8 @@ struct PanelView: View {
                 Text(buds.name)
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
-                Text(buds.isConnected ? "Connected" : "Disconnected")
+                Text(buds.isPaired ? (buds.isConnected ? "Connected" : "Disconnected")
+                                   : "Not paired")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -53,11 +58,9 @@ struct PanelView: View {
                 set: { $0 ? buds.connect() : buds.disconnect() }))
                 .toggleStyle(.switch)
                 .labelsHidden()
-                .disabled(buds.isBusy)
+                .disabled(buds.isBusy || !buds.isPaired)
 
             Menu {
-                Button("Refresh") { buds.refreshConnectionState() }
-                Divider()
                 Button("Quit BudsBar") { NSApplication.shared.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis")
@@ -71,7 +74,10 @@ struct PanelView: View {
     }
 
     private var disconnectedNote: some View {
-        Text("Take the earbuds out of the case, then switch on to connect.")
+        Text(buds.isPaired
+             ? "Take the earbuds out of the case, then switch on to connect."
+             : "No paired earbuds speak this protocol. Pair your realme or OPPO buds in "
+             + "Bluetooth settings first.")
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -84,7 +90,15 @@ struct PanelView: View {
         HStack(spacing: 0) {
             batteryCell("L", glyph: "l.circle", level: buds.battery.left)
             batteryCell("R", glyph: "r.circle", level: buds.battery.right)
-            batteryCell("Case", glyph: "shippingbox", level: buds.battery.enclosure)
+            // The case reports 0% while it is shut or asleep, which `interpret` turns into
+            // nil rather than a false flat battery. There is no reading to show then, so the
+            // cell is dropped entirely instead of standing there with a dash in it.
+            if buds.battery.enclosure != nil {
+                // The charging-case glyph, same one the menu bar uses. `shippingbox` read as
+                // a parcel rather than an earbud case.
+                batteryCell("Case", glyph: "airpods.pro.chargingcase.wireless.fill",
+                            level: buds.battery.enclosure)
+            }
         }
         .frame(maxWidth: .infinity)
     }

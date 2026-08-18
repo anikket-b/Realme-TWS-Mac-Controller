@@ -12,8 +12,8 @@ import Observation
 @Observable
 final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
-    // realme Buds T500 Pro. IOBluetooth wants dashes, not colons.
-    static let address = "B0-38-E2-DE-E6-16"
+    /// Raw protocol logging, off unless asked for — the buds push status every few seconds.
+    static let isTracing = ProcessInfo.processInfo.environment["BUDSBAR_TRACE"] != nil
 
     /// SDP service UUID for OPPO/realme's `oppointeraction` control service.
     /// realme is an OPPO sub-brand and shares the protocol.
@@ -24,7 +24,11 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     // MARK: - Published state
 
-    var name: String = "realme Buds T500 Pro"
+    static let fallbackName = "Earbuds"
+
+    var name: String = Buds.fallbackName
+    /// Guards the one-shot background lookup in `syncName`; cleared on a new link.
+    private var hasReadDisplayName = false
     var isConnected = false
     /// True once the vendor control channel is open — noise control needs it.
     var isControlChannelOpen = false
@@ -36,6 +40,41 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Set while a connect/disconnect is in flight so the toggle can't be double-fired.
     var isBusy = false
     var lastError: String?
+
+    /// Set when the power toggle was used to switch the buds off, so the auto-connect poll
+    /// leaves them off instead of dragging them straight back.
+    private(set) var isSwitchedOff = false
+
+    /// Whether the menu bar item should exist at all.
+    ///
+    /// Classic Bluetooth has no way to ask whether a device is nearby short of paging it,
+    /// and paging *is* connecting — `remoteNameRequest` answers from cache, so it cannot
+    /// tell a closed case from an open one. So availability is inferred rather than probed:
+    /// either the buds are connected, or they were switched off deliberately and the user
+    /// needs the toggle to switch them back on. Buds sitting in a shut case are neither, and
+    /// the item disappears.
+    ///
+    /// Busy counts too — but only when the attempt is the user's. Flipping the toggle back
+    /// on clears `isSwitchedOff` before the link exists, and without the busy term the item
+    /// would vanish the moment it was flipped. The background retry must NOT get the same
+    /// courtesy: against a shut case openConnection() blocks for the full page timeout, so
+    /// counting auto attempts kept resurfacing the red icon for ~10s of every 20.
+    /// With nothing paired the item stays put regardless, so the panel can say why instead
+    /// of the app being invisible and looking broken.
+    var isAvailable: Bool {
+        !isPaired || isConnected || isSwitchedOff || (isBusy && !isAutoConnecting)
+    }
+
+    /// True while the in-flight connect attempt came from the poll rather than the user.
+    private var isAutoConnecting = false
+
+    /// False when no paired device speaks the control protocol — nothing to drive.
+    var isPaired: Bool { device != nil }
+
+    /// Called whenever `isAvailable` or `isConnected` may have moved, so the status item can
+    /// insert, remove, or recolour itself. A plain callback rather than observation: the
+    /// owner is AppKit, not a SwiftUI view.
+    var onStateChange: (() -> Void)?
 
     struct Battery {
         var left: Int?
@@ -49,11 +88,30 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private var channel: IOBluetoothRFCOMMChannel?
     private var rxBuffer: [UInt8] = []
     private var disconnectObserver: IOBluetoothUserNotification?
+    /// True while `openControlChannel` has work in flight. See the note there.
+    private var isOpening = false
+
+    /// Until when the link is taken as up on the strength of a positive event, whatever the
+    /// `isConnected()` query says. The query lags several seconds behind an openConnection
+    /// that has already returned success — the trace showed it still false through three
+    /// deviceDidConnect callbacks — and the refresh that trusted it hid the menu bar item in
+    /// the gap. Real evidence of a drop (deviceDidDisconnect) cancels the assertion early.
+    private var linkAssertedUntil = Date.distantPast
+
+    /// Covers the observed lag with slack; a wrong assertion self-corrects at the next poll.
+    private static let linkAssertionGrace: TimeInterval = 10
+
+    private func assertLinkUp() {
+        isConnected = true
+        linkAssertedUntil = Date().addingTimeInterval(Self.linkAssertionGrace)
+    }
+    private var pollTimer: Timer?
+    private var ticks = 0
 
     override init() {
         super.init()
-        device = IOBluetoothDevice(addressString: Self.address)
-        if let cached = device?.name, !cached.isEmpty { name = cached }
+        device = Self.discoverDevice()
+        syncName()
 
         // Fires for *any* device connecting; we filter to ours. There is no
         // per-device connect notification in IOBluetooth, only a global one.
@@ -62,30 +120,118 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
             selector: #selector(deviceDidConnect(_:device:)))
 
         refreshConnectionState()
+
+        // Two jobs at two rates. Re-reading the link is a local query, so it runs often and
+        // keeps `isConnected` honest no matter which notification was missed. Actually
+        // reaching for the buds pages the radio, so that only happens every tenth tick.
+        pollTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.pollInterval, repeats: true
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.refreshConnectionState()
+            self.ticks += 1
+            if self.ticks % Self.ticksPerConnectAttempt == 0 { self.attemptAutoConnect() }
+        }
+        pollTimer?.tolerance = Self.pollInterval / 2   // no deadline worth a forced wakeup
+        attemptAutoConnect()
+    }
+
+    /// How often the link state is re-read. `isConnected()` is a local lookup, not a radio
+    /// round trip, so this can be brisk — it sets how fast the menu bar item reacts to a
+    /// case being shut.
+    private static let pollInterval: TimeInterval = 2
+
+    /// Connect attempts are the expensive part — a shut case answers with a page timeout —
+    /// so they run every tenth poll, i.e. every 20s.
+    /// ponytail: fixed interval, not a backoff. Tune these two before adding one.
+    private static let ticksPerConnectAttempt = 10
+
+    private func attemptAutoConnect() {
+        // Pairing can happen while we are running, so keep looking until something turns up.
+        if device == nil {
+            device = Self.discoverDevice()
+            if device != nil { hasReadDisplayName = false }
+        }
+        guard !isConnected, !isSwitchedOff, !isBusy else { return }
+        connect(auto: true)
+    }
+
+    /// Picks the paired device that advertises the `oppointeraction` control service.
+    ///
+    /// Matching on the service rather than on a hardcoded address means any earbuds
+    /// speaking this protocol work, and no one's Bluetooth address ends up in the source.
+    /// `BUDSBAR_ADDRESS` forces a specific one when several are paired.
+    private static func discoverDevice() -> IOBluetoothDevice? {
+        if let forced = ProcessInfo.processInfo.environment["BUDSBAR_ADDRESS"] {
+            return IOBluetoothDevice(addressString: forced)
+        }
+        guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else {
+            return nil
+        }
+        let uuid = IOBluetoothSDPUUID(bytes: controlServiceUUID, length: 16)
+        // Relies on the SDP records cached at pairing time; nothing is paged here.
+        return paired.first { $0.getServiceRecord(for: uuid) != nil }
+    }
+
+    /// Called at app termination. Releasing the RFCOMM channel matters: macOS grants one
+    /// per device, and a channel left to the OS reaper can refuse the next launch its open.
+    func shutdown() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+        testTimer?.invalidate()
+        testTimer = nil
+        disconnectObserver?.unregister()
+        disconnectObserver = nil
+        closeControlChannel()
     }
 
     // MARK: - Power toggle
 
-    func connect() {
+    func connect(auto: Bool = false) {
         guard !isBusy, let device else { return }
+        isAutoConnecting = auto
+        // Intent is cleared straight away — the user asked for on, so the auto-connect poll
+        // must be free to keep retrying. What holds the menu bar item in place across the
+        // attempt is `isBusy` being part of `isAvailable`, not this flag.
+        isSwitchedOff = false
         isBusy = true
-        lastError = nil
+        // Background retries neither surface errors nor erase one the user is reading.
+        if !auto { lastError = nil }
+        onStateChange?()
         // openConnection blocks until the baseband link is up or times out.
         DispatchQueue.global(qos: .userInitiated).async {
             let result = device.openConnection()
             DispatchQueue.main.async {
                 self.isBusy = false
-                if result == kIOReturnSuccess {
-                    self.refreshConnectionState()
-                } else {
+                self.isAutoConnecting = false
+                if result == kIOReturnSuccess { self.assertLinkUp() }
+                // A failed background attempt is the normal state of a shut case, not an
+                // error to display when the item next appears. A failed USER attempt is
+                // different: with `isSwitchedOff` already cleared and `isBusy` ending here,
+                // every availability term would be false and the item would vanish out from
+                // under the toggle the user just flipped — buds are routinely slow to accept
+                // a page right after being dropped, so this was constant. Falling back to
+                // switched-off keeps the item, shows the error, and leaves the toggle ready.
+                if result != kIOReturnSuccess, !auto {
                     self.lastError = Self.describe(result)
+                    self.isSwitchedOff = true
                 }
+                // Refresh on both outcomes: a failed attempt still ends `isBusy`, and the
+                // status item has to be told, or it sits stale until the next poll.
+                self.refreshConnectionState()
             }
         }
     }
 
     func disconnect() {
         guard !isBusy, let device else { return }
+        // The user asked for down — an earlier up-assertion must not outvote them while
+        // closeConnection completes.
+        linkAssertedUntil = .distantPast
+        // Keeps the menu bar item present so the toggle can be switched back on, and stops
+        // the auto-connect poll from undoing this a few seconds later.
+        isSwitchedOff = true
+        onStateChange?()
         isBusy = true
         closeControlChannel()
         DispatchQueue.global(qos: .userInitiated).async {
@@ -100,27 +246,134 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     // MARK: - Connection tracking
 
+    /// The one place the disconnect observer is written. Both `deviceDidConnect` and
+    /// `refreshConnectionState` need to register it, and assigning over a live registration
+    /// leaks it still armed — a later disconnect then fires every orphaned observer too.
+    private func armDisconnectObserver(for device: IOBluetoothDevice) {
+        disconnectObserver?.unregister()
+        disconnectObserver = device.register(
+            forDisconnectNotification: self,
+            selector: #selector(deviceDidDisconnect(_:device:)))
+    }
+
     @objc private func deviceDidConnect(_ notification: IOBluetoothUserNotification, device connected: IOBluetoothDevice) {
         guard connected.addressString == device?.addressString else { return }
         // Re-register per connection; the disconnect notification is one-shot.
-        disconnectObserver = connected.register(
-            forDisconnectNotification: self,
-            selector: #selector(deviceDidDisconnect(_:device:)))
-        DispatchQueue.main.async { self.refreshConnectionState() }
+        armDisconnectObserver(for: connected)
+        DispatchQueue.main.async {
+            self.assertLinkUp()
+            // A fresh link — even one the buds initiated themselves after coming out of the
+            // case — means they are on and in use, so any earlier switch-off is spent.
+            self.isSwitchedOff = false
+            // Re-read the display name: a new link is the natural moment to notice a rename.
+            self.hasReadDisplayName = false
+            self.refreshConnectionState()
+        }
     }
 
     @objc private func deviceDidDisconnect(_ notification: IOBluetoothUserNotification, device disconnected: IOBluetoothDevice) {
+        // Fired means spent — it is one-shot — so nil without unregister is correct here.
         disconnectObserver = nil
         DispatchQueue.main.async {
+            self.linkAssertedUntil = .distantPast   // a real drop beats any grace window
             self.closeControlChannel()
             self.refreshConnectionState()
         }
     }
 
+    /// Mirrors the name macOS shows in the Bluetooth settings.
+    ///
+    /// That is not `IOBluetoothDevice.name`, which reports the name the earbuds advertise
+    /// over the air — renaming a device in Bluetooth settings does not change what the
+    /// hardware calls itself, so the two drift apart (here: "Realme Buds" on screen,
+    /// "realme Buds T500 Pro" over the air). Only the Bluetooth daemon holds the display
+    /// name; it is in no readable preference file or IORegistry entry, and
+    /// `system_profiler` is the one interface that reports it.
+    ///
+    /// Spawning a process is far too slow for the 2s poll that calls this, so the lookup
+    /// runs once in the background and is repeated only when a new link comes up — which
+    /// is also when a rename would realistically be noticed. The advertised name stands in
+    /// meanwhile, and the hardcoded default only shows before either has answered.
+    private func syncName() {
+        if name == Self.fallbackName, let advertised = device?.name, !advertised.isEmpty {
+            name = advertised
+        }
+
+        guard !hasReadDisplayName else { return }
+        hasReadDisplayName = true
+        guard let address = device?.addressString else { return }
+        DispatchQueue.global(qos: .utility).async {
+            guard let displayName = Self.displayNameFromSystemProfiler(address: address)
+            else { return }
+            DispatchQueue.main.async {
+                if self.name != displayName {
+                    self.name = displayName
+                    self.onStateChange?()
+                }
+            }
+        }
+    }
+
+    /// Reads the name Bluetooth settings shows. Each device is a single-pair dictionary
+    /// keyed by its display name, so the key is the value we want and the address inside
+    /// identifies which entry is ours.
+    private static func displayNameFromSystemProfiler(address: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        process.arguments = ["SPBluetoothDataType", "-json"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        // Drain before waiting: a full pipe buffer would deadlock the child.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sections = root["SPBluetoothDataType"] as? [[String: Any]]
+        else { return nil }
+
+        let wanted = address.replacingOccurrences(of: "-", with: ":").uppercased()
+        for section in sections {
+            // Look in both lists so the name is right even when the buds are away.
+            for listKey in ["device_connected", "device_not_connected"] {
+                guard let list = section[listKey] as? [[String: Any]] else { continue }
+                for entry in list {
+                    for (displayName, raw) in entry {
+                        guard let info = raw as? [String: Any],
+                              let addr = info["device_address"] as? String,
+                              addr.uppercased() == wanted
+                        else { continue }
+                        return displayName
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     func refreshConnectionState() {
-        let connected = device?.isConnected() ?? false
+        syncName()
+        let connected = (device?.isConnected() ?? false) || Date() < linkAssertedUntil
+        if connected != isConnected {
+            FileHandle.standardError.write(Data(
+                "LINK connected=\(connected) available=\(connected || isSwitchedOff)\n".utf8))
+        }
         isConnected = connected
+        // `isSwitchedOff` is deliberately not touched here. It is user intent, and this
+        // method is a state re-read that the poll calls every 2s — clearing the flag on
+        // `connected` raced the poll against closeConnection(): the tick landing before the
+        // link finished dropping saw connected=true, wiped the just-set flag, and the item
+        // vanished once the drop completed. Intent is written only by connect()/disconnect()
+        // and by deviceDidConnect (a genuine new link means the buds are on and in use).
+        defer { onStateChange?() }
         if connected {
+            // The connect notification only fires for connections made while we are running,
+            // so buds already connected at launch would never get a disconnect observer —
+            // and shutting the case would go unnoticed, leaving the menu bar item on screen.
+            if disconnectObserver == nil, let device {
+                armDisconnectObserver(for: device)
+            }
             openControlChannel()
         } else {
             battery = Battery()
@@ -132,26 +385,48 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     // MARK: - Vendor control channel
 
     private func openControlChannel() {
-        guard channel == nil, let device else { return }
+        // `channel` is not assigned until the async work below finishes, so it cannot on its
+        // own tell a second caller that an open is already under way. Without `isOpening`,
+        // reopening the panel during those few seconds starts a competing SDP query and a
+        // second openRFCOMMChannelAsync, which collide — and every command sent meanwhile is
+        // dropped by `send`, which reads as the whole app lagging.
+        guard channel == nil, !isOpening, let device else { return }
+        isOpening = true
 
         DispatchQueue.global(qos: .userInitiated).async {
             // SDP-resolve the channel rather than hardcoding 15, so a firmware
-            // renumber can't silently point us at a different service.
+            // renumber can't silently point us at a different service. The query has to run
+            // in this process at least once or the channel open never completes.
             device.performSDPQuery(nil)
-            Thread.sleep(forTimeInterval: 2)
 
+            // Poll instead of sleeping a flat two seconds: the record usually resolves in
+            // well under that, and the wait used to be paid in full on every connect.
             let uuid = IOBluetoothSDPUUID(bytes: Self.controlServiceUUID, length: 16)
-            guard let record = device.getServiceRecord(for: uuid) else {
-                DispatchQueue.main.async { self.lastError = "control service not found" }
+            var record: IOBluetoothSDPServiceRecord?
+            for _ in 0..<40 {
+                record = device.getServiceRecord(for: uuid)
+                if record != nil { break }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+
+            var channelID: BluetoothRFCOMMChannelID = 0
+            guard let record else {
+                DispatchQueue.main.async {
+                    self.isOpening = false
+                    self.lastError = "control service not found"
+                }
                 return
             }
-            var channelID: BluetoothRFCOMMChannelID = 0
             guard record.getRFCOMMChannelID(&channelID) == kIOReturnSuccess else {
-                DispatchQueue.main.async { self.lastError = "control service has no RFCOMM channel" }
+                DispatchQueue.main.async {
+                    self.isOpening = false
+                    self.lastError = "control service has no RFCOMM channel"
+                }
                 return
             }
 
             DispatchQueue.main.async {
+                defer { self.isOpening = false }
                 var opened: IOBluetoothRFCOMMChannel?
                 let result = device.openRFCOMMChannelAsync(
                     &opened, withChannelID: channelID, delegate: self)
@@ -179,21 +454,16 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         // the level the buds last reported is what makes the button a no-op for anyone who
         // has already chosen one on the phone; `encodeSetNoiseMode` falls back to Max when
         // we have never seen a level (fresh launch, or the buds are on Smart).
-        let packet = BudsProtocol.encodeSetNoiseMode(requested, level: ancLevel)
-        // Empty means the write opcode is not known yet — never send a guessed packet.
-        guard !packet.isEmpty else { return }
         // Deliberately not updating `mode` here. The buds echo a state notification
         // once they have actually switched, and that echo is what the UI renders —
         // it is also what keeps this panel and realme Link on the phone in agreement.
-        send(packet)
+        send(BudsProtocol.encodeSetNoiseMode(requested, level: ancLevel))
     }
 
     /// Same contract as `set(mode:)` — the level shown is the level the buds reported, not
     /// the one that was asked for, so the panel and realme Link cannot drift apart.
     func set(ancLevel requested: ANCLevel) {
-        let packet = BudsProtocol.encodeSetNoiseMode(.noiseCancellation, level: requested)
-        guard !packet.isEmpty else { return }
-        send(packet)
+        send(BudsProtocol.encodeSetNoiseMode(.noiseCancellation, level: requested))
     }
 
     @discardableResult
@@ -236,9 +506,11 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         let chunk = Array(UnsafeBufferPointer(
             start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength))
         rxBuffer.append(contentsOf: chunk)
-        // Raw trace on stderr — still the fastest way to work out the bytes we have
-        // not decoded yet (the write opcode, the wear-state payload).
-        FileHandle.standardError.write(Data("RX \(BudsProtocol.hex(chunk))\n".utf8))
+        // Raw trace, for decoding the payloads that are still unknown. Opt-in: the buds
+        // push status every few seconds, so a shipped build would spew continuously.
+        if Self.isTracing {
+            FileHandle.standardError.write(Data("RX \(BudsProtocol.hex(chunk))\n".utf8))
+        }
 
         // RFCOMM delivers arbitrary chunks; frames split across callbacks.
         let frames = BudsProtocol.drainFrames(from: &rxBuffer)
@@ -265,10 +537,14 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
                         Data("LEVEL reported \(value?.label ?? "unknown (Smart)")\n".utf8))
                 }
                 ancLevel = value
-            case .battery(let left, let right, let enclosure):
-                if let left { battery.left = left }
-                if let right { battery.right = right }
-                if let enclosure { battery.enclosure = enclosure }
+            case .battery(let slot, let level):
+                // Assigned, not merged: nil here means the buds reported the slot as
+                // unknown, and a slot they did not mention produces no update at all.
+                switch slot {
+                case .left: battery.left = level
+                case .right: battery.right = level
+                case .enclosure: battery.enclosure = level
+                }
             }
         }
     }

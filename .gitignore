@@ -1,0 +1,10 @@
+# SwiftPM build products
+.build/
+.swiftpm/
+Package.resolved
+
+# Assembled app bundle — produced by build.sh
+BudsBar.app/
+
+# macOS
+.DS_Store

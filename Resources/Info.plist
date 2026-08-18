@@ -24,6 +24,6 @@
 	<!-- Without this string the Bluetooth TCC prompt never appears and RFCOMM
 	     silently fails. -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>BudsBar talks to your realme Buds over Bluetooth to read their battery level and switch noise-control modes.</string>
+	<string>BudsBar talks to your earbuds over Bluetooth to read their battery level and switch noise-control modes.</string>
 </dict>
 </plist>

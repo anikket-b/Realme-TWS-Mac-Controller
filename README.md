@@ -1,8 +1,14 @@
 # BudsBar
 
-A macOS menu bar app for the **realme Buds T500 Pro**. Shows per-earbud and case battery,
-switches between ANC / Off / Transparency, and connects or disconnects the
-buds — none of which macOS exposes on its own.
+A macOS menu bar app for **realme / OPPO / OnePlus earbuds** that speak the OPOv1 control
+protocol. Shows per-earbud and case battery, switches between ANC / Off / Transparency with
+the three ANC strengths, and connects or disconnects the buds — none of which macOS exposes
+on its own.
+
+Developed against realme Buds T500 Pro. The buds are found by looking for the paired device
+that advertises the control service, so no address is baked into the source and any earbuds
+speaking this protocol should work; the mode *values*, though, were confirmed on the T500
+Pro only and other models may number them differently (see [The protocol](#the-protocol)).
 
 There is no macOS realme Link. To a Mac these are a plain A2DP/HFP headset: noise control
 can only be changed by touching an earbud, and the system reports a single battery figure
@@ -18,7 +24,7 @@ a second; change it in BudsBar and the phone follows.
 - Swift 6.2+ toolchain — Command Line Tools are enough to compile
 - An installed `Xcode.app`, for one file only: the SwiftUI macro plugin. It does **not**
   need to be selected with `xcode-select`. See [Building](#building).
-- realme Buds T500 Pro, already paired with the Mac
+- Earbuds already paired with the Mac and advertising the `oppointeraction` service
 
 ## Building
 
@@ -27,11 +33,19 @@ a second; change it in BudsBar and the phone follows.
 open BudsBar.app
 ```
 
-To see the protocol trace on stderr, run the binary directly instead:
+Run the binary directly to see its log on stderr:
 
 ```sh
 ./BudsBar.app/Contents/MacOS/BudsBar
 ```
+
+Environment variables, all optional:
+
+| Variable | Effect |
+|---|---|
+| `BUDSBAR_TRACE=1` | Hex-dump every frame received. Off by default — the buds push status every few seconds. |
+| `BUDSBAR_TEST=1` | Command every mode and ANC level in turn and log what the buds report back. |
+| `BUDSBAR_ADDRESS=aa-bb-…` | Force a specific device instead of auto-discovering, for when several paired devices speak the protocol. |
 
 `build.sh` compiles with SwiftPM, assembles the `.app` bundle, and ad-hoc signs it. The
 bundle identifier is fixed across rebuilds so the granted Bluetooth permission survives,
@@ -53,7 +67,7 @@ Package.swift          SwiftPM manifest; also locates the SwiftUI macro plugin
 build.sh               build → .app bundle → ad-hoc codesign
 Resources/Info.plist   LSUIElement, NSBluetoothAlwaysUsageDescription
 Sources/BudsBar/
-  App.swift            MenuBarExtra entry point
+  App.swift            NSStatusItem menu bar item and the popover that hosts the panel
   Buds.swift           IOBluetooth transport and observable device state
   Protocol.swift       OPOv1 frame encoding/decoding (pure, self-checking)
   PanelView.swift      the panel UI
