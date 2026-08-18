@@ -30,6 +30,9 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     var isControlChannelOpen = false
     var battery = Battery()
     var mode: NoiseMode?
+    /// How hard noise cancellation is working. nil while the buds are on Smart, which this
+    /// app does not model, or before the first report has arrived.
+    var ancLevel: ANCLevel?
     /// Set while a connect/disconnect is in flight so the toggle can't be double-fired.
     var isBusy = false
     var lastError: String?
@@ -122,6 +125,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         } else {
             battery = Battery()
             mode = nil
+            ancLevel = nil
         }
     }
 
@@ -171,12 +175,24 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     // MARK: - Noise control
 
     func set(mode requested: NoiseMode) {
-        let packet = BudsProtocol.encodeSetNoiseMode(requested)
+        // Switching to ANC has to name a level, since the level *is* the mode byte. Reusing
+        // the level the buds last reported is what makes the button a no-op for anyone who
+        // has already chosen one on the phone; `encodeSetNoiseMode` falls back to Max when
+        // we have never seen a level (fresh launch, or the buds are on Smart).
+        let packet = BudsProtocol.encodeSetNoiseMode(requested, level: ancLevel)
         // Empty means the write opcode is not known yet — never send a guessed packet.
         guard !packet.isEmpty else { return }
         // Deliberately not updating `mode` here. The buds echo a state notification
         // once they have actually switched, and that echo is what the UI renders —
         // it is also what keeps this panel and realme Link on the phone in agreement.
+        send(packet)
+    }
+
+    /// Same contract as `set(mode:)` — the level shown is the level the buds reported, not
+    /// the one that was asked for, so the panel and realme Link cannot drift apart.
+    func set(ancLevel requested: ANCLevel) {
+        let packet = BudsProtocol.encodeSetNoiseMode(.noiseCancellation, level: requested)
+        guard !packet.isEmpty else { return }
         send(packet)
     }
 
@@ -238,10 +254,17 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
             switch update {
             case .noiseMode(let value):
                 if mode != value {
-                    FileHandle.standardError.write(
-                        Data("MODE reported \(value.label), wire \(value.wire)\n".utf8))
+                    // Not logging `value.wire` — for ANC that is the default level's byte,
+                    // not the one that arrived. The LEVEL line below carries that detail.
+                    FileHandle.standardError.write(Data("MODE reported \(value.label)\n".utf8))
                 }
                 mode = value
+            case .ancLevel(let value):
+                if ancLevel != value {
+                    FileHandle.standardError.write(
+                        Data("LEVEL reported \(value?.label ?? "unknown (Smart)")\n".utf8))
+                }
+                ancLevel = value
             case .battery(let left, let right, let enclosure):
                 if let left { battery.left = left }
                 if let right { battery.right = right }
@@ -252,14 +275,19 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     // MARK: - Mode cycle test
 
-    /// Drives all three modes in turn so the command can be verified end to end against
-    /// the notifications the buds send back. Runs only under BUDSBAR_TEST=1.
-    private var testQueue: [NoiseMode] = []
+    /// Drives every mode and every ANC level in turn so the commands can be verified end to
+    /// end against the notifications the buds send back. Runs only under BUDSBAR_TEST=1.
+    private var testQueue: [(label: String, send: () -> Void)] = []
     private var testTimer: Timer?
 
     private func startModeTest() {
         guard isControlChannelOpen else { return }
-        testQueue = [.noiseCancellation, .transparency, .off]
+        testQueue = ANCLevel.allCases.map { level in
+            ("ANC \(level.label), value \(level.wire)", { [weak self] in self?.set(ancLevel: level) })
+        } + [
+            ("Transparency", { [weak self] in self?.set(mode: .transparency) }),
+            ("Off", { [weak self] in self?.set(mode: .off) }),
+        ]
         testLog("cycling modes, 3s apart")
         testTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -270,8 +298,8 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 return
             }
             self.testQueue.removeFirst()
-            self.testLog("commanding \(next.label), value \(next.wire)")
-            self.set(mode: next)
+            self.testLog("commanding \(next.label)")
+            next.send()
         }
     }
 

@@ -27,23 +27,80 @@ enum NoiseMode: String, CaseIterable, Identifiable {
     /// commanded and when reporting.
     ///
     /// ANC and Off are the reverse of what the published OnePlus mapping says — on this
-    /// hardware 0x01 is Off and 0x04 is ANC, confirmed by listening to what each command
-    /// actually does. Consistent with the capture: while cycling modes from the phone the
-    /// buds only ever announced 0x01, 0x02 and 0x08, never 0x04.
+    /// hardware 0x01 is Off, confirmed by listening to what each command actually does.
+    ///
+    /// Noise cancellation is not one value but four: the level rides in the same byte
+    /// (see `ANCLevel`), which is why a capture of the phone switching modes shows values
+    /// the mode alone cannot explain.
     init?(wire: UInt8) {
         switch wire {
         case 0x01: self = .off
         case 0x02: self = .transparency
-        case 0x04, 0x08: self = .noiseCancellation
+        case 0x04, 0x08, 0x10, 0x20: self = .noiseCancellation
         default: return nil
+        }
+    }
+
+    /// The byte to command this mode. For noise cancellation this is the *default* — the
+    /// level-bearing values are in `ANCLevel`, and `encodeSetNoiseMode` prefers an explicit
+    /// level when it has one.
+    var wire: UInt8 {
+        switch self {
+        case .off: return 0x01
+        case .transparency: return 0x02
+        case .noiseCancellation: return ANCLevel.max.wire
+        }
+    }
+}
+
+/// How hard noise cancellation works. realme Link calls these Mild / Moderate / Max, and
+/// offers a fourth, Smart, which picks a level for you — Smart is deliberately not modelled
+/// here, so `init?(wire:)` returns nil for it and the UI shows no level rather than a wrong
+/// one.
+///
+/// The values are not in strength order and are not guessable: Mild is 0x04, Max 0x08,
+/// Moderate 0x10, Smart 0x20. Confirmed by capturing `Tools/sniff.swift` while tapping each
+/// level on the phone, including single-tap runs for Mild and Max on their own.
+/// Declared strongest-first, matching realme Link's own order — `allCases` is what the
+/// picker renders, and it is deliberately not the wire order.
+enum ANCLevel: String, CaseIterable, Identifiable {
+    case max
+    case moderate
+    case mild
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .mild: return "Mild"
+        case .moderate: return "Moderate"
+        case .max: return "Max"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .mild: return "Quieter places — home and office"
+        case .moderate: return "Noisy places — streets and malls"
+        case .max: return "Very noisy places — planes and trains"
         }
     }
 
     var wire: UInt8 {
         switch self {
-        case .off: return 0x01
-        case .transparency: return 0x02
-        case .noiseCancellation: return 0x04
+        case .mild: return 0x04
+        case .max: return 0x08
+        case .moderate: return 0x10
+        }
+    }
+
+    /// nil for Smart (0x20) and for any value that is not noise cancellation at all.
+    init?(wire: UInt8) {
+        switch wire {
+        case 0x04: self = .mild
+        case 0x08: self = .max
+        case 0x10: self = .moderate
+        default: return nil
         }
     }
 }
@@ -74,6 +131,10 @@ enum BudsProtocol {
 
     enum Update: Equatable {
         case noiseMode(NoiseMode)
+        /// nil means noise cancellation is on but at a level we do not model — Smart.
+        /// Only reported alongside a `.noiseMode(.noiseCancellation)`, so the last known
+        /// level survives a trip through Off or Transparency.
+        case ancLevel(ANCLevel?)
         case battery(left: Int?, right: Int?, enclosure: Int?)
     }
 
@@ -123,10 +184,13 @@ enum BudsProtocol {
         case setNoiseMode = 0x04
     }
 
-    static func encodeSetNoiseMode(_ mode: NoiseMode) -> [UInt8] {
-        makeFrame(0x00, 0x00, Category.status.rawValue, Subcommand.setNoiseMode.rawValue,
-                  sequence: nextSequence(),
-                  payload: [0x01, 0x01, mode.wire])
+    /// `level` is used only for noise cancellation, where it *is* the mode byte. Passing
+    /// nil there falls back to `NoiseMode.wire`, i.e. Max.
+    static func encodeSetNoiseMode(_ mode: NoiseMode, level: ANCLevel? = nil) -> [UInt8] {
+        let value = mode == .noiseCancellation ? (level ?? .max).wire : mode.wire
+        return makeFrame(0x00, 0x00, Category.status.rawValue, Subcommand.setNoiseMode.rawValue,
+                         sequence: nextSequence(),
+                         payload: [0x01, 0x01, value])
     }
 
     /// Session opener. The buds answer it, and OPOv1 wants it before commands.
@@ -217,8 +281,17 @@ enum BudsProtocol {
             return [.battery(left: left, right: right, enclosure: enclosure)]
 
         case .noiseMode:
+            // While Smart is running the buds emit a second `03` block, with a count of 4
+            // and a single pair, carrying the level Smart has currently settled on. Acting
+            // on it would show a level here that the phone is not showing, so it is
+            // ignored — a real mode report always has exactly one pair.
+            guard count == 1 else { return [] }
+
             for (id, value) in pairs where id == noiseModeID {
-                if let mode = NoiseMode(wire: value) { return [.noiseMode(mode)] }
+                guard let mode = NoiseMode(wire: value) else { return [] }
+                guard mode == .noiseCancellation else { return [.noiseMode(mode)] }
+                // The level lives in the same byte, so one report yields both.
+                return [.noiseMode(mode), .ancLevel(ANCLevel(wire: value))]
             }
             return []
 
@@ -253,14 +326,40 @@ enum BudsProtocol {
         assert(interpret(frames[0]) == [.battery(left: 100, right: 100, enclosure: nil)])
 
         // Noise mode, captured while commanding each mode in turn.
-        for (wire, expected) in [("01", NoiseMode.off),
-                                 ("02", .transparency),
-                                 ("04", .noiseCancellation),
-                                 ("08", .noiseCancellation)] {
+        for (wire, expected) in [("01", NoiseMode.off), ("02", .transparency)] {
             buffer = bytes("aa 0b 00 00 04 02 9b 04 00 03 01 01 \(wire)")
             frames = drainFrames(from: &buffer)
             assert(interpret(frames[0]) == [.noiseMode(expected)], "wire \(wire)")
         }
+
+        // The ANC levels, captured off the phone one tap at a time. Both the mode and the
+        // level come out of the single byte.
+        for (wire, expected) in [("04", ANCLevel.mild),
+                                 ("08", .max),
+                                 ("10", .moderate)] {
+            buffer = bytes("aa 0b 00 00 04 02 9b 04 00 03 01 01 \(wire)")
+            frames = drainFrames(from: &buffer)
+            assert(interpret(frames[0]) == [.noiseMode(.noiseCancellation), .ancLevel(expected)],
+                   "ANC level wire \(wire)")
+        }
+
+        // Smart: noise cancellation is on, but at no level we model — the level must read
+        // as unknown rather than being rounded to the nearest one we do know.
+        buffer = bytes("aa 0b 00 00 04 02 48 04 00 03 01 01 20")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0]) == [.noiseMode(.noiseCancellation), .ancLevel(nil)],
+               "Smart reports ANC with no level")
+
+        // Smart's companion block, captured immediately after the frame above. Count is 4
+        // with one pair; acting on it would show Moderate while the phone shows Smart.
+        buffer = bytes("aa 0b 00 00 04 02 48 04 00 03 04 01 10")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0]).isEmpty, "Smart's effective-level echo is ignored")
+
+        // Off and Transparency carry no level, so the last known one survives them.
+        buffer = bytes("aa 0b 00 00 04 02 9b 04 00 03 01 01 01")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0]) == [.noiseMode(.off)], "Off does not clear the level")
 
         // An unmapped mode value yields no update rather than a wrong one.
         buffer = bytes("aa 0b 00 00 04 02 1a 04 00 03 01 01 7f")
@@ -282,6 +381,23 @@ enum BudsProtocol {
         assert(frames.count == 1 && sent.isEmpty, "set frame parses as one frame")
         assert(frames[0].opcode == 0x0404, "set uses the set opcode, not the report one")
         assert(interpret(frames[0]).isEmpty, "a set frame is not a status update")
+
+        // Commanding a level puts that level's byte in the mode field, and a level is
+        // ignored for the modes that do not have one.
+        assert(encodeSetNoiseMode(.noiseCancellation, level: .moderate).last == 0x10, "set Moderate")
+        assert(encodeSetNoiseMode(.noiseCancellation, level: .mild).last == 0x04, "set Mild")
+        assert(encodeSetNoiseMode(.noiseCancellation).last == ANCLevel.max.wire, "ANC defaults to Max")
+        assert(encodeSetNoiseMode(.off, level: .mild).last == 0x01, "level does not leak into Off")
+
+        // Every command we can send must round-trip back to the state it asked for.
+        for level in ANCLevel.allCases {
+            var command = encodeSetNoiseMode(.noiseCancellation, level: level)
+            let value = command.last!
+            command = bytes("aa 0b 00 00 04 02 9b 04 00 03 01 01 \(String(format: "%02x", value))")
+            frames = drainFrames(from: &command)
+            assert(interpret(frames[0]) == [.noiseMode(.noiseCancellation), .ancLevel(level)],
+                   "\(level.label) round-trips")
+        }
 
         // Two frames arriving coalesced in one read.
         buffer = bytes("aa 0b 00 00 04 02 1a 04 00 03 01 01 08")

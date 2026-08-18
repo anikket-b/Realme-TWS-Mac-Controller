@@ -26,6 +26,7 @@ struct PanelView: View {
         .frame(width: 340)
         .animation(.smooth(duration: 0.28), value: buds.isConnected)
         .animation(.smooth(duration: 0.28), value: buds.mode)
+        .animation(.smooth(duration: 0.28), value: buds.ancLevel)
     }
 
     // MARK: - Header
@@ -136,8 +137,10 @@ struct PanelView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .popover(isPresented: $showingHelp, arrowEdge: .bottom) {
-                    Text("Noise cancellation blocks outside sound. Transparency lets it "
-                       + "through so you can hear your surroundings. Off does neither.")
+                    Text("Noise cancellation blocks outside sound — Max for planes and "
+                       + "trains, Moderate for streets, Mild for home and office. "
+                       + "Transparency lets sound through so you can hear your "
+                       + "surroundings. Off does neither.")
                         .font(.callout)
                         .frame(width: 240)
                         .padding(12)
@@ -153,6 +156,10 @@ struct PanelView: View {
             .disabled(!canSwitchModes)
             .opacity(canSwitchModes ? 1 : 0.45)
 
+            if buds.mode == .noiseCancellation {
+                ancLevelPicker
+            }
+
             if let note = modeSwitchingNote {
                 Text(note)
                     .font(.caption)
@@ -163,6 +170,56 @@ struct PanelView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular, in: .rect(cornerRadius: 20))
+    }
+
+    /// Shown only while noise cancellation is the active mode, since the level is
+    /// meaningless otherwise. The selection is `ANCLevel?` so that Smart — which realme Link
+    /// offers and this app does not — leaves every segment unselected instead of claiming a
+    /// level the phone is not showing.
+    private var ancLevelPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Hand-rolled rather than a segmented Picker: on macOS that control sizes itself
+            // to its widest label and will not stretch, so the row never filled the card.
+            HStack(spacing: 6) {
+                ForEach(ANCLevel.allCases) { level in
+                    levelSegment(level)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            Text(buds.ancLevel?.detail ?? "Smart — the buds are choosing the level")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .disabled(!canSwitchModes)
+        .opacity(canSwitchModes ? 1 : 0.45)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// One level, sized to an equal share of the row. Nothing is selected while the buds are
+    /// on Smart, which is the honest reading — see `ANCLevel`.
+    private func levelSegment(_ level: ANCLevel) -> some View {
+        let selected = buds.ancLevel == level
+        return Button {
+            buds.set(ancLevel: level)
+        } label: {
+            Text(level.label)
+                .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(maxWidth: .infinity)
+                .frame(height: 28)
+                .glassEffect(
+                    selected ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+                    in: .capsule)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(level.label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var canSwitchModes: Bool { buds.isControlChannelOpen }

@@ -90,13 +90,36 @@ status: `00` accepted, `01` rejected.
 | Hello | `aa 07 00 00 00 01 <seq> 00 00` |
 | Off | `aa 0a 00 00 04 04 <seq> 03 00 01 01 01` |
 | Transparency | `aa 0a 00 00 04 04 <seq> 03 00 01 01 02` |
-| ANC | `aa 0a 00 00 04 04 <seq> 03 00 01 01 04` |
+| ANC, Mild | `aa 0a 00 00 04 04 <seq> 03 00 01 01 04` |
+| ANC, Max | `aa 0a 00 00 04 04 <seq> 03 00 01 01 08` |
+| ANC, Moderate | `aa 0a 00 00 04 04 <seq> 03 00 01 01 10` |
 
 **The ANC and Off values are the reverse of the published OnePlus mapping.** On the T500
-Pro `0x01` is Off and `0x04` is ANC. Taking the documented mapping at face value produced
-an app where those two buttons did each other's job. Corroborating evidence: while cycling
-modes from the phone, the buds only ever announced `0x01`, `0x02` and `0x08` — never
-`0x04`. `0x08` appears to be a second ANC variant (adaptive) and is treated as ANC.
+Pro `0x01` is Off. Taking the documented mapping at face value produced an app where those
+two buttons did each other's job.
+
+**There is no single "ANC" value — the strength is the mode byte.** realme Link's four
+noise-cancellation sub-modes each get their own value, and they are not in strength order:
+
+| Value | Mode |
+|---|---|
+| `01` | Off |
+| `02` | Transparency |
+| `04` | ANC, Mild |
+| `08` | ANC, Max |
+| `10` | ANC, Moderate |
+| `20` | ANC, Smart |
+
+Confirmed by running `Tools/sniff.swift` while tapping each level on the phone, with
+single-tap runs for Mild and Max on their own to break the ambiguity — a multi-tap trace is
+hard to read, because the buds also announce their *current* mode when the phone's app
+opens, so the first event in a run belongs to the state before it, not to the first tap.
+
+This is also why the earlier reading of `0x08` as "a second ANC variant (adaptive)" was
+wrong, and why the ANC button used to command `0x04`: it was pinning the buds to Mild every
+time. Smart (`0x20`) is decoded as ANC but deliberately has no level in this app; while it
+is active the buds emit a second `03` block — count `4`, one pair — carrying the level Smart
+has settled on, which BudsBar ignores so the panel cannot show a level the phone is not.
 
 ### Notifications
 
@@ -107,7 +130,7 @@ list — `<type> <count>` then `count` (id, value) pairs:
 |---|---|
 | `01` | Battery: id 1 = left, 2 = right, 3 = case, values in percent |
 | `02` | Some other setting. Moves when the mode changes but is **not** the mode. Not decoded. |
-| `03` | Noise mode: id 1, value `01`/`02`/`04`/`08` as above |
+| `03` | Noise mode: id 1, value as in the table above. Count is always 1 — a `03` block with count 4 is Smart reporting the level it picked, not a mode change. |
 
 Three traps worth knowing, all of which cost real debugging time here:
 
@@ -148,14 +171,18 @@ automatically at launch in debug builds:
 # BudsProtocol.selfCheck passed
 ```
 
-To exercise the radio end to end, `BUDSBAR_TEST=1` commands all three modes in turn and
-logs what the buds report back:
+To exercise the radio end to end, `BUDSBAR_TEST=1` commands every ANC level and every mode
+in turn and logs what the buds report back. The buds echo the state they actually reached,
+so a `LEVEL reported` line matching the command above it is a real confirmation, not just a
+successful write:
 
 ```sh
 BUDSBAR_TEST=1 ./BudsBar.app/Contents/MacOS/BudsBar
-# TEST commanding ANC, value 4
-# MODE reported ANC, wire 4
+# TEST commanding ANC Mild, value 4
+# LEVEL reported Mild
 ```
+
+It leaves the buds switched Off when it finishes.
 
 ## Credits
 
