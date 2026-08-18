@@ -1,4 +1,4 @@
-# BudsBar
+# Realme TWS Mac Controller
 
 A macOS menu bar app for **realme / OPPO / OnePlus earbuds** that speak the OPOv1 control
 protocol. Shows per-earbud and case battery, switches between ANC / Off / Transparency with
@@ -12,11 +12,14 @@ Pro only and other models may number them differently (see [The protocol](#the-p
 
 There is no macOS realme Link. To a Mac these are a plain A2DP/HFP headset: noise control
 can only be changed by touching an earbud, and the system reports a single battery figure
-instead of three. BudsBar talks to the earbuds' vendor control protocol directly.
+instead of three. This app talks to the earbuds' vendor control protocol directly.
+
+(The code, binary, and bundle identifier keep the original internal name **BudsBar** — the
+identifier is fixed so the granted Bluetooth permission survives rebuilds.)
 
 State is read back from the earbuds rather than assumed, so the panel and realme Link on a
-phone agree with each other. Change the mode on the phone and BudsBar follows within about
-a second; change it in BudsBar and the phone follows.
+phone agree with each other. Change the mode on the phone and the app follows within about
+a second; change it in the app and the phone follows.
 
 ## Requirements
 
@@ -30,13 +33,13 @@ a second; change it in BudsBar and the phone follows.
 
 ```sh
 ./build.sh            # release; pass `debug` for a debug build
-open BudsBar.app
+open "Realme TWS Mac Controller.app"
 ```
 
 Run the binary directly to see its log on stderr:
 
 ```sh
-./BudsBar.app/Contents/MacOS/BudsBar
+"./Realme TWS Mac Controller.app/Contents/MacOS/BudsBar"
 ```
 
 Environment variables, all optional:
@@ -82,7 +85,7 @@ of the Dock.
 
 The buds expose several RFCOMM services over Bluetooth Classic. The one that matters is
 `oppointeraction`, SDP UUID `0000079A-D102-11E1-9B23-00025B00A5A5` — **OPOv1**, the control
-protocol shared across BBK Electronics brands (OPPO, OnePlus, realme). BudsBar resolves the
+protocol shared across BBK Electronics brands (OPPO, OnePlus, realme). The app resolves the
 channel by UUID at runtime rather than hardcoding a number, so a firmware renumber can't
 silently point it at a different service.
 
@@ -133,7 +136,7 @@ This is also why the earlier reading of `0x08` as "a second ANC variant (adaptiv
 wrong, and why the ANC button used to command `0x04`: it was pinning the buds to Mild every
 time. Smart (`0x20`) is decoded as ANC but deliberately has no level in this app; while it
 is active the buds emit a second `03` block — count `4`, one pair — carrying the level Smart
-has settled on, which BudsBar ignores so the panel cannot show a level the phone is not.
+has settled on, which the app ignores so the panel cannot show a level the phone is not.
 
 ### Notifications
 
@@ -166,7 +169,7 @@ opcodes that aren't decoded yet (EQ, touch controls):
 swift Tools/sniff.swift 15        # defaults to 12 15 17
 ```
 
-macOS hands out one RFCOMM channel per device, so **quit BudsBar before running it** — they
+macOS hands out one RFCOMM channel per device, so **quit the app before running it** — they
 cannot both hold a channel. For the same reason the sniffer takes one channel at a time;
 requesting several at once silently returns the same channel repeatedly.
 
@@ -181,7 +184,7 @@ mode, a coalesced pair, a frame split across two reads, and leading garbage — 
 automatically at launch in debug builds:
 
 ```sh
-./build.sh debug && ./BudsBar.app/Contents/MacOS/BudsBar
+./build.sh debug && "./Realme TWS Mac Controller.app/Contents/MacOS/BudsBar"
 # BudsProtocol.selfCheck passed
 ```
 
@@ -191,7 +194,7 @@ so a `LEVEL reported` line matching the command above it is a real confirmation,
 successful write:
 
 ```sh
-BUDSBAR_TEST=1 ./BudsBar.app/Contents/MacOS/BudsBar
+BUDSBAR_TEST=1 "./Realme TWS Mac Controller.app/Contents/MacOS/BudsBar"
 # TEST commanding ANC Mild, value 4
 # LEVEL reported Mild
 ```

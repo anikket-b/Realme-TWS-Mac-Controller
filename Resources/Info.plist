@@ -7,9 +7,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>com.aniketbudhwani.budsbar</string>
 	<key>CFBundleName</key>
-	<string>BudsBar</string>
+	<string>Realme TWS Mac Controller</string>
 	<key>CFBundleDisplayName</key>
-	<string>BudsBar</string>
+	<string>Realme TWS Mac Controller</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -24,6 +24,6 @@
 	<!-- Without this string the Bluetooth TCC prompt never appears and RFCOMM
 	     silently fails. -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>BudsBar talks to your earbuds over Bluetooth to read their battery level and switch noise-control modes.</string>
+	<string>Realme TWS Mac Controller talks to your earbuds over Bluetooth to read their battery level and switch noise-control modes.</string>
 </dict>
 </plist>

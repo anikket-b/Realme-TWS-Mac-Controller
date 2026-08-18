@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds BudsBar.app. Compiles with the Command Line Tools; an installed Xcode.app is
+# Builds Realme TWS Mac Controller.app. Compiles with the Command Line Tools; an installed Xcode.app is
 # needed only for its SwiftUI macro plugin (see Package.swift). Xcode need not be selected
 # with xcode-select.
 set -euo pipefail
@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 CONFIG=${1:-release}
-APP="BudsBar.app"
+APP="Realme TWS Mac Controller.app"
 
 # The SwiftUI macro plugin is located in Package.swift so the editor works too.
 swift build -c "$CONFIG"
@@ -23,4 +23,4 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP"
 
 echo "built $APP"
-echo "run:  open $APP     (or: ./$APP/Contents/MacOS/BudsBar  to see stderr)"
+echo "run:  open \"$APP\"     (or: \"./$APP/Contents/MacOS/BudsBar\"  to see stderr)"
