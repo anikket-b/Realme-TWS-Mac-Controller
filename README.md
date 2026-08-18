@@ -230,3 +230,7 @@ The OPOv1 command layout came from
 which document the protocol for OnePlus Buds over BLE. The frame format carries over intact
 to realme hardware on RFCOMM; the notification payload types here were decoded against the
 T500 Pro directly.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Not affiliated with realme, OPPO, OnePlus, or BBK Electronics.
