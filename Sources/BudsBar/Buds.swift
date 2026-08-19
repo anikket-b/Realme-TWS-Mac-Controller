@@ -146,7 +146,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     /// How long the last frame counts for. The buds push status every few seconds unprompted,
     /// so a gap this long means they have genuinely gone rather than merely fallen quiet.
-    private static let frameFreshness: TimeInterval = 25
+    private static let frameFreshness: TimeInterval = 8
 
     /// True while frames are arriving often enough to prove the buds are present.
     private var isStreamLive: Bool { Date().timeIntervalSince(lastFrameAt) < Self.frameFreshness }
