@@ -142,6 +142,8 @@ enum BudsProtocol {
         /// cleared. Bundling all three into one update collapsed those two cases together,
         /// and a case that had gone to sleep kept showing its last percentage forever.
         case battery(BatterySlot, Int?)
+        /// Where one bud is. Only emitted for values `BudPlacement` recognises.
+        case placement(BatterySlot, BudPlacement)
     }
 
     enum BatterySlot: UInt8 {
@@ -150,12 +152,31 @@ enum BudsProtocol {
         case enclosure = 0x03
     }
 
+    /// Where a bud is, decoded from the `02` block — the one thing that tells a bud charging
+    /// in the case from a bud in use.
+    ///
+    /// The block is a per-slot list keyed by the same ids as the battery one. Captured with
+    /// the right bud worn and the left in an open case it read `01 00  02 03  03 04`, and
+    /// with both buds in the case `01 00  02 00  03 04`: the worn bud's slot is the only one
+    /// that moved. The enclosure's own value (`04`) is something else and stays undecoded, so
+    /// it falls out of `init?(rawValue:)` on its own rather than needing a special case.
+    ///
+    /// Only the two values above are known. A bud out of the case but not in an ear may well
+    /// report a third, so an unrecognised value means "no idea" and the UI leaves the cell
+    /// alone rather than guessing it into one of these.
+    enum BudPlacement: UInt8 {
+        case inCase = 0x00
+        case inUse = 0x03
+    }
+
     // MARK: - Payload types
 
     private enum PayloadType: UInt8 {
         case battery = 0x01
-        /// Ids 0x01–0x03, none of which track the noise mode. Not decoded.
-        case otherSettings = 0x02
+        /// Per-slot placement, keyed by the same ids as `battery`. It was read as "some other
+        /// setting" for a while because it moves whenever the mode changes — which is also
+        /// when buds get taken out and put back. See `BudPlacement`.
+        case placement = 0x02
         case noiseMode = 0x03
     }
 
@@ -298,8 +319,13 @@ enum BudsProtocol {
             }
             return []
 
-        case .otherSettings:
-            return []
+        case .placement:
+            return pairs.compactMap { id, value in
+                guard let slot = BatterySlot(rawValue: id),
+                      let placement = BudPlacement(rawValue: value)
+                else { return nil }
+                return .placement(slot, placement)
+            }
         }
     }
 
@@ -380,10 +406,27 @@ enum BudsProtocol {
         assert(frames.count == 1 && buffer.isEmpty, "short frame")
         assert(interpret(frames[0]).isEmpty, "unknown mode value ignored")
 
-        // The 0x02 block is a different setting and must not move the mode.
-        buffer = bytes("aa 0f 00 00 04 02 0d 08 00 02 03 01 03 02 00 03 04")
+        // The 0x02 block is placement, not the mode — captured with the right bud worn and
+        // the left one sitting in an open case. The enclosure's own value is not a placement
+        // and must drop out rather than being forced into one.
+        buffer = bytes("aa 0f 00 00 04 02 98 08 00 02 03 01 00 02 03 03 04")
         frames = drainFrames(from: &buffer)
-        assert(interpret(frames[0]).isEmpty, "0x02 block is not the mode")
+        assert(interpret(frames[0]) == [.placement(.left, .inCase), .placement(.right, .inUse)],
+               "0x02 block is placement, and carries no mode")
+
+        // Same frame shape with both buds back in the case: only the worn bud's slot moved.
+        buffer = bytes("aa 0f 00 00 04 02 a0 08 00 02 03 01 00 02 00 03 04")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0]) == [.placement(.left, .inCase), .placement(.right, .inCase)],
+               "both buds in the case")
+
+        // The battery report drops a bud in the case instead of reporting it as unknown, so
+        // its slot goes absent and whatever the UI had for it would otherwise stand forever.
+        // Placement is what tells the two apart.
+        buffer = bytes("aa 0d 00 00 04 02 97 06 00 01 02 02 64 03 00")
+        frames = drainFrames(from: &buffer)
+        assert(interpret(frames[0]) == [.battery(.right, 100), .battery(.enclosure, nil)],
+               "a bud in the case is absent from the battery report, not zero")
 
         // The frame we send to set a mode must be well formed, carry the set opcode
         // rather than the report opcode, and put the right value in the payload.

@@ -33,6 +33,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// True once the vendor control channel is open — noise control needs it.
     var isControlChannelOpen = false
     var battery = Battery()
+    var placement = Placement()
     var mode: NoiseMode?
     /// How hard noise cancellation is working. nil while the buds are on Smart, which this
     /// app does not model, or before the first report has arrived.
@@ -41,8 +42,13 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     var isBusy = false
     var lastError: String?
 
-    /// Set when the power toggle was used to switch the buds off, so the auto-connect poll
-    /// leaves them off instead of dragging them straight back.
+    /// Set when the power toggle was used to switch the buds off.
+    ///
+    /// Sticky, and it outranks every other signal — including frames still arriving on the
+    /// control channel. A worn earbud re-pages the Mac within a second of `closeConnection`
+    /// and macOS brings the audio link straight back up, so anything that reads the link as
+    /// evidence of intent ends up undoing the switch-off the user just asked for. Off means
+    /// off until the toggle is used again; only `connect()` clears this.
     private(set) var isSwitchedOff = false
 
     /// Set when a connect the *user* asked for failed, so the item stays on screen with the
@@ -89,6 +95,28 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         var enclosure: Int?
     }
 
+    /// Where each bud is, as the buds report it. nil until they have said.
+    ///
+    /// This is what stops a bud charging in the case from being drawn as one in use. It also
+    /// covers a gap in the battery report: a bud in the case drops out of it entirely rather
+    /// than reporting as unknown, and an absent slot deliberately keeps its last value — so
+    /// without placement the panel showed a frozen percentage for a bud that was put away.
+    struct Placement {
+        var left: BudsProtocol.BudPlacement?
+        var right: BudsProtocol.BudPlacement?
+
+        subscript(slot: BudsProtocol.BatterySlot) -> BudsProtocol.BudPlacement? {
+            get { slot == .left ? left : slot == .right ? right : nil }
+            set {
+                switch slot {
+                case .left: left = newValue
+                case .right: right = newValue
+                case .enclosure: break   // the case is not a bud and has no placement
+                }
+            }
+        }
+    }
+
     // MARK: - Private
 
     private var device: IOBluetoothDevice?
@@ -108,18 +136,20 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Covers the observed lag with slack; a wrong assertion self-corrects at the next poll.
     private static let linkAssertionGrace: TimeInterval = 10
 
-    /// When the user last switched the buds off from the panel.
+    /// When a frame last arrived from the buds.
     ///
-    /// A worn earbud re-pages the Mac within a second or two of `closeConnection`, and macOS
-    /// brings the audio link straight back up — so a connect notification arriving right
-    /// after a switch-off is the OS undoing it, not the user putting the buds back on. Taking
-    /// it at face value cleared `isSwitchedOff`, and with `isConnected()` still reporting
-    /// false the item lost every availability term and vanished.
-    private var switchedOffAt = Date.distantPast
+    /// This is the one unambiguous signal the app has. `isConnected()` under-reports, and
+    /// `deviceDidDisconnect` fires on drops the data stream then carries on straight through
+    /// — the trace showed battery and mode reports still landing while both the link and the
+    /// channel were believed down. Bytes cannot arrive from earbuds that are not there.
+    private var lastFrameAt = Date.distantPast
 
-    /// How long a switch-off outranks incoming connect notifications. Comfortably longer than
-    /// the re-page, short enough that genuinely putting the buds back on is still noticed.
-    private static let switchOffQuietPeriod: TimeInterval = 20
+    /// How long the last frame counts for. The buds push status every few seconds unprompted,
+    /// so a gap this long means they have genuinely gone rather than merely fallen quiet.
+    private static let frameFreshness: TimeInterval = 25
+
+    /// True while frames are arriving often enough to prove the buds are present.
+    private var isStreamLive: Bool { Date().timeIntervalSince(lastFrameAt) < Self.frameFreshness }
 
     private func assertLinkUp() {
         isConnected = true
@@ -253,7 +283,8 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         // Keeps the menu bar item present so the toggle can be switched back on, and stops
         // the auto-connect poll from undoing this a few seconds later.
         isSwitchedOff = true
-        switchedOffAt = Date()
+        // Whatever arrived before this moment no longer counts as evidence of a live link.
+        lastFrameAt = .distantPast
         didFailUserConnect = false
         onStateChange?()
         isBusy = true
@@ -285,17 +316,12 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         // Re-register per connection; the disconnect notification is one-shot.
         armDisconnectObserver(for: connected)
         DispatchQueue.main.async {
-            // A link coming back within moments of the user switching off is macOS
-            // re-establishing audio for an earbud that is still being worn. Honouring it
-            // would undo the switch-off the user just asked for. See `switchedOffAt`.
-            if self.isSwitchedOff,
-               Date().timeIntervalSince(self.switchedOffAt) < Self.switchOffQuietPeriod {
-                return
-            }
+            // A link coming back after a switch-off is macOS re-establishing audio for an
+            // earbud that is still being worn, not the user asking for the buds back. It is
+            // not evidence of intent, so it does not clear `isSwitchedOff` — nor is there any
+            // point asserting a link the app has been told to ignore.
+            guard !self.isSwitchedOff else { return }
             self.assertLinkUp()
-            // A fresh link — even one the buds initiated themselves after coming out of the
-            // case — means they are on and in use, so any earlier switch-off is spent.
-            self.isSwitchedOff = false
             // Re-read the display name: a new link is the natural moment to notice a rename.
             self.hasReadDisplayName = false
             self.refreshConnectionState()
@@ -385,18 +411,25 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     func refreshConnectionState() {
         syncName()
-        // An open control channel outranks everything else. `isConnected()` under-reports
-        // badly — it goes false while the headset link is plainly still up, because the audio
-        // side holds its own reference to a device this process has stopped connecting to —
-        // and the assertion grace only papered over that for its ten seconds. Once it lapsed
-        // the toggle flipped itself off, auto-connect asserted the link up again, and the two
-        // took turns forever. Frames arriving on the channel are proof the buds are there.
-        let connected = isControlChannelOpen
-            || (device?.isConnected() ?? false)
-            || Date() < linkAssertedUntil
+        // A live stream outranks everything else. `isConnected()` under-reports badly — it
+        // goes false while the headset link is plainly still up, because the audio side holds
+        // its own reference to a device this process has stopped connecting to — and the
+        // assertion grace only papered over that for its ten seconds. Once it lapsed the
+        // toggle flipped itself off, auto-connect asserted the link up again, and the two took
+        // turns forever. The remaining terms are for the window before the first frame lands.
+        //
+        // A switch-off beats all of it. Frames keep arriving for a while after
+        // `closeConnection` — believing them would put the app straight back into the loop
+        // under a new name.
+        let connected = !isSwitchedOff
+            && (isStreamLive
+                || isControlChannelOpen
+                || (device?.isConnected() ?? false)
+                || Date() < linkAssertedUntil)
         if connected != isConnected {
             FileHandle.standardError.write(Data((
-                "LINK connected=\(connected) channel=\(isControlChannelOpen) "
+                "LINK connected=\(connected) stream=\(isStreamLive) "
+                + "channel=\(isControlChannelOpen) "
                 + "available=\(connected || isSwitchedOff)\n").utf8))
         }
         isConnected = connected
@@ -417,6 +450,7 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
             openControlChannel()
         } else {
             battery = Battery()
+            placement = Placement()
             mode = nil
             ancLevel = nil
         }
@@ -545,6 +579,26 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     func rfcommChannelData(_ channel: IOBluetoothRFCOMMChannel!, data dataPointer: UnsafeMutableRawPointer!, length dataLength: Int) {
         let chunk = Array(UnsafeBufferPointer(
             start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength))
+
+        // The buds go on talking for a while after a switch-off, and acting on that would
+        // walk the app back to connected against the user's wishes. Drop it on the floor,
+        // buffer included, so nothing is half-parsed when the toggle comes back on.
+        guard !isSwitchedOff else {
+            rxBuffer.removeAll()
+            return
+        }
+
+        // Data is the proof the channel is alive, whatever the link bookkeeping believes. A
+        // spurious deviceDidDisconnect tears the channel down on paper while the real one
+        // keeps delivering; without this the app sat deaf behind that teardown, showing
+        // Disconnected and a dead noise-control card while battery reports rolled in.
+        lastFrameAt = Date()
+        if !isControlChannelOpen {
+            isControlChannelOpen = true
+            self.channel = channel
+            refreshConnectionState()
+        }
+
         rxBuffer.append(contentsOf: chunk)
         // Raw trace, for decoding the payloads that are still unknown. Opt-in: the buds
         // push status every few seconds, so a shipped build would spew continuously.
@@ -584,6 +638,25 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 case .left: battery.left = level
                 case .right: battery.right = level
                 case .enclosure: battery.enclosure = level
+                }
+
+            case .placement(let slot, let where_):
+                guard placement[slot] != where_ else { break }
+                FileHandle.standardError.write(Data("PLACEMENT \(slot) \(where_)\n".utf8))
+                placement[slot] = where_
+                // Only on the move into the case, not on every report of it. A bud put away
+                // drops out of the battery report entirely, and an absent slot keeps its last
+                // reading — so the reading it had while in use would stand on the panel
+                // indefinitely. Clearing it once is enough: an awake case goes on reporting
+                // the bud inside it, and the next report fills the value back in within
+                // seconds. A case that has gone to sleep reports nothing, which is when the
+                // stale number used to sit there, and now the cell honestly reads unknown.
+                if where_ == .inCase {
+                    switch slot {
+                    case .left: battery.left = nil
+                    case .right: battery.right = nil
+                    case .enclosure: break
+                    }
                 }
             }
         }

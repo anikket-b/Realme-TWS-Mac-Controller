@@ -29,6 +29,8 @@ struct PanelView: View {
         .onAppear { buds.refreshConnectionState() }
         .animation(.smooth(duration: 0.28), value: buds.isConnected)
         .animation(.smooth(duration: 0.28), value: buds.battery.enclosure == nil)
+        .animation(.smooth(duration: 0.28), value: buds.placement.left)
+        .animation(.smooth(duration: 0.28), value: buds.placement.right)
         .animation(.smooth(duration: 0.28), value: buds.mode)
         .animation(.smooth(duration: 0.28), value: buds.ancLevel)
     }
@@ -88,11 +90,13 @@ struct PanelView: View {
 
     private var batteryRow: some View {
         HStack(spacing: 0) {
-            batteryCell("L", glyph: "l.circle", level: buds.battery.left)
-            batteryCell("R", glyph: "r.circle", level: buds.battery.right)
+            batteryCell("L", glyph: "l.circle", level: buds.battery.left,
+                        placement: buds.placement.left)
+            batteryCell("R", glyph: "r.circle", level: buds.battery.right,
+                        placement: buds.placement.right)
             // The case reports 0% while it is shut or asleep, which `interpret` turns into
-            // nil rather than a false flat battery. There is no reading to show then, so the
-            // cell is dropped entirely instead of standing there with a dash in it.
+            // nil rather than a false flat battery. Nothing to show then, so the cell goes
+            // away entirely — the buds keep theirs and read "—%".
             if buds.battery.enclosure != nil {
                 // The charging-case glyph, same one the menu bar uses. `shippingbox` read as
                 // a parcel rather than an earbud case.
@@ -103,24 +107,42 @@ struct PanelView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func batteryCell(_ title: String, glyph: String, level: Int?) -> some View {
-        VStack(spacing: 6) {
+    /// `placement` is nil for the case, and for a bud whose reported value we do not
+    /// recognise — both mean "no idea", and the cell is drawn as it always was rather than
+    /// guessing. A bud known to be in the case is dimmed — it is charging, not in use — but
+    /// still shows its percentage while the case is awake and reporting. A shut case stops
+    /// reporting, the reading it cleared on the way in is never refilled, and the cell then
+    /// honestly reads "—%".
+    private func batteryCell(_ title: String, glyph: String, level: Int?,
+                             placement: BudsProtocol.BudPlacement? = nil) -> some View {
+        let stowed = placement == .inCase
+        let muted = stowed || level == nil
+        return VStack(spacing: 6) {
             Image(systemName: glyph)
                 .font(.system(size: 15, weight: .regular))
                 .frame(width: 30, height: 30)
+                .foregroundStyle(stowed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 .glassEffect(.regular, in: .circle)
 
             HStack(spacing: 4) {
-                Image(systemName: batterySymbol(for: level))
-                    .font(.system(size: 13))
-                    .foregroundStyle(level == nil ? .secondary : .primary)
-                Text(level.map { "\($0)%" } ?? "—")
+                // No glyph without a reading: a battery symbol would draw a level we do not
+                // have.
+                if let level {
+                    Image(systemName: batterySymbol(for: level))
+                        .font(.system(size: 13))
+                        .foregroundStyle(muted ? .secondary : .primary)
+                }
+                Text(level.map { "\($0)%" } ?? "—%")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(level == nil ? .secondary : .primary)
+                    .foregroundStyle(muted ? .secondary : .primary)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(level.map { "\(title) battery \($0) percent" } ?? "\(title) battery unknown")
+            .accessibilityLabel(
+                level.map { "\(title) battery \($0) percent\(stowed ? ", in the case" : "")" }
+                     ?? "\(title) battery unknown")
         }
         .frame(maxWidth: .infinity)
     }
