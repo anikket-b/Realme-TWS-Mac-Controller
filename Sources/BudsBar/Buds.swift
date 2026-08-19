@@ -45,6 +45,12 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// leaves them off instead of dragging them straight back.
     private(set) var isSwitchedOff = false
 
+    /// Set when a connect the *user* asked for failed, so the item stays on screen with the
+    /// error on it. Deliberately not `isSwitchedOff`: that flag also stops the auto-connect
+    /// poll, and the user asked for on — the buds are routinely slow to accept the first page
+    /// after being dropped, so the retry is exactly what recovers it.
+    private var didFailUserConnect = false
+
     /// Whether the menu bar item should exist at all.
     ///
     /// Classic Bluetooth has no way to ask whether a device is nearby short of paging it,
@@ -62,7 +68,8 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// With nothing paired the item stays put regardless, so the panel can say why instead
     /// of the app being invisible and looking broken.
     var isAvailable: Bool {
-        !isPaired || isConnected || isSwitchedOff || (isBusy && !isAutoConnecting)
+        !isPaired || isConnected || isSwitchedOff || didFailUserConnect
+            || (isBusy && !isAutoConnecting)
     }
 
     /// True while the in-flight connect attempt came from the poll rather than the user.
@@ -101,8 +108,22 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
     /// Covers the observed lag with slack; a wrong assertion self-corrects at the next poll.
     private static let linkAssertionGrace: TimeInterval = 10
 
+    /// When the user last switched the buds off from the panel.
+    ///
+    /// A worn earbud re-pages the Mac within a second or two of `closeConnection`, and macOS
+    /// brings the audio link straight back up — so a connect notification arriving right
+    /// after a switch-off is the OS undoing it, not the user putting the buds back on. Taking
+    /// it at face value cleared `isSwitchedOff`, and with `isConnected()` still reporting
+    /// false the item lost every availability term and vanished.
+    private var switchedOffAt = Date.distantPast
+
+    /// How long a switch-off outranks incoming connect notifications. Comfortably longer than
+    /// the re-page, short enough that genuinely putting the buds back on is still noticed.
+    private static let switchOffQuietPeriod: TimeInterval = 20
+
     private func assertLinkUp() {
         isConnected = true
+        didFailUserConnect = false
         linkAssertedUntil = Date().addingTimeInterval(Self.linkAssertionGrace)
     }
     private var pollTimer: Timer?
@@ -209,12 +230,13 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 // error to display when the item next appears. A failed USER attempt is
                 // different: with `isSwitchedOff` already cleared and `isBusy` ending here,
                 // every availability term would be false and the item would vanish out from
-                // under the toggle the user just flipped — buds are routinely slow to accept
-                // a page right after being dropped, so this was constant. Falling back to
-                // switched-off keeps the item, shows the error, and leaves the toggle ready.
+                // under the toggle the user just flipped. `didFailUserConnect` keeps the item
+                // and shows the error while leaving the poll free to retry — parking it in
+                // `isSwitchedOff` instead also switched the retry off, so one slow page left
+                // the app stuck disconnected until the toggle was used again.
                 if result != kIOReturnSuccess, !auto {
                     self.lastError = Self.describe(result)
-                    self.isSwitchedOff = true
+                    self.didFailUserConnect = true
                 }
                 // Refresh on both outcomes: a failed attempt still ends `isBusy`, and the
                 // status item has to be told, or it sits stale until the next poll.
@@ -231,6 +253,8 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         // Keeps the menu bar item present so the toggle can be switched back on, and stops
         // the auto-connect poll from undoing this a few seconds later.
         isSwitchedOff = true
+        switchedOffAt = Date()
+        didFailUserConnect = false
         onStateChange?()
         isBusy = true
         closeControlChannel()
@@ -261,6 +285,13 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
         // Re-register per connection; the disconnect notification is one-shot.
         armDisconnectObserver(for: connected)
         DispatchQueue.main.async {
+            // A link coming back within moments of the user switching off is macOS
+            // re-establishing audio for an earbud that is still being worn. Honouring it
+            // would undo the switch-off the user just asked for. See `switchedOffAt`.
+            if self.isSwitchedOff,
+               Date().timeIntervalSince(self.switchedOffAt) < Self.switchOffQuietPeriod {
+                return
+            }
             self.assertLinkUp()
             // A fresh link — even one the buds initiated themselves after coming out of the
             // case — means they are on and in use, so any earlier switch-off is spent.
@@ -354,10 +385,19 @@ final class Buds: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     func refreshConnectionState() {
         syncName()
-        let connected = (device?.isConnected() ?? false) || Date() < linkAssertedUntil
+        // An open control channel outranks everything else. `isConnected()` under-reports
+        // badly — it goes false while the headset link is plainly still up, because the audio
+        // side holds its own reference to a device this process has stopped connecting to —
+        // and the assertion grace only papered over that for its ten seconds. Once it lapsed
+        // the toggle flipped itself off, auto-connect asserted the link up again, and the two
+        // took turns forever. Frames arriving on the channel are proof the buds are there.
+        let connected = isControlChannelOpen
+            || (device?.isConnected() ?? false)
+            || Date() < linkAssertedUntil
         if connected != isConnected {
-            FileHandle.standardError.write(Data(
-                "LINK connected=\(connected) available=\(connected || isSwitchedOff)\n".utf8))
+            FileHandle.standardError.write(Data((
+                "LINK connected=\(connected) channel=\(isControlChannelOpen) "
+                + "available=\(connected || isSwitchedOff)\n").utf8))
         }
         isConnected = connected
         // `isSwitchedOff` is deliberately not touched here. It is user intent, and this
